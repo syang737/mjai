@@ -20,12 +20,15 @@ def shanten(counts: np.ndarray) -> int:
     return calculate_shanten(_ids(counts))
 
 
+def _improving(c: list[int], ids: list[int], base: int) -> list[int]:
+    return [t for t in range(N_TYPES) if c[t] < 4 and calculate_shanten(ids + [t * 4 + c[t]]) < base]
+
+
 def improving_tiles(counts: np.ndarray) -> list[int]:
     """For a 3n+1 hand: tile types whose draw lowers shanten. At tenpai these are the waits."""
     assert counts.sum() % 3 == 1, "expects a hand waiting for a draw (3n+1 tiles)"
     ids = _ids(counts)
-    base = calculate_shanten(ids)
-    return [t for t in range(N_TYPES) if counts[t] < 4 and calculate_shanten(ids + [t * 4 + int(counts[t])]) < base]
+    return _improving(counts.tolist(), ids, calculate_shanten(ids))
 
 
 def waits(counts: np.ndarray) -> list[int]:
@@ -40,9 +43,16 @@ def ukeire(counts: np.ndarray, remaining: np.ndarray) -> float:
 
 def discard_table(counts: np.ndarray, remaining: np.ndarray) -> dict[int, tuple[int, float]]:
     """For a 3n+2 hand: {tile type: (shanten, ukeire) after discarding one copy of it}."""
+    c = counts.tolist()
+    rem = remaining.tolist()
+    ids = _ids(counts)
     out = {}
-    for t in np.flatnonzero(counts):
-        h = counts.copy()
-        h[t] -= 1
-        out[int(t)] = (shanten(h), ukeire(h, remaining))
+    for t in range(N_TYPES):
+        if not c[t]:
+            continue
+        c[t] -= 1
+        h = [i for i in ids if i != t * 4 + c[t]]
+        sh = calculate_shanten(h)
+        out[t] = (sh, float(sum(rem[u] for u in _improving(c, h, sh))))
+        c[t] += 1
     return out

@@ -5,12 +5,15 @@
 - Belief heads keep training on simulator ground truth as an auxiliary loss.
 - League: each game seats the learner against itself, the teacher, or frozen snapshots;
   only the learner's decisions are trained on.
+- Games are collected by worker processes (one torch thread each); the update runs in the
+  main process.
 
     python -m mjbot.train_rl --init checkpoints/sl_b2p.pt --out checkpoints/rl.pt --iters 40
 """
 
 import argparse
 import copy
+import multiprocessing as mp
 import random
 import time
 
@@ -21,14 +24,17 @@ import torch.nn.functional as F
 from .agents import NetAgent
 from .arena import duplicate_match, fmt
 from .features import labels, oracle_planes
-from .model import belief_loss, load, masked_logits, save
+from .model import Net, belief_loss, load, masked_logits, save
 from .runner import RANK_REWARD, run_games
 from .teacher import Teacher
 
+_FIELDS = ("x", "mask", "action", "logp", "oracle", "ron", "holdings", "tenpai", "key")
+
 
 class Buffer:
-    def __init__(self):
-        self.rows = {k: [] for k in ("x", "mask", "action", "logp", "oracle", "ron", "holdings", "tenpai", "key")}
+    def __init__(self, chunk: int = 0):
+        self.chunk = chunk
+        self.rows = {k: [] for k in _FIELDS}
 
     def on_act(self, decisions, x, a, logp) -> None:
         for i, d in enumerate(decisions):
@@ -36,20 +42,36 @@ class Buffer:
                 continue
             lab = labels(d)
             r = self.rows
-            r["x"].append(x[i].numpy())
+            r["x"].append(x[i].numpy().astype(np.float16))
             r["mask"].append(d.mask)
             r["action"].append(int(a[i]))
             r["logp"].append(float(logp[i]))
-            r["oracle"].append(oracle_planes(lab))
+            r["oracle"].append(oracle_planes(lab).astype(np.float16))
             r["ron"].append(lab.ron)
             r["holdings"].append(lab.holdings)
             r["tenpai"].append(lab.tenpai)
-            r["key"].append((d.game, d.seat))
+            r["key"].append((self.chunk, d.game, d.seat))
 
-    def tensors(self) -> dict[str, torch.Tensor]:
-        out = {k: torch.from_numpy(np.stack(v) if k in ("x", "mask", "oracle", "ron", "holdings", "tenpai")
-                                   else np.array(v)) for k, v in self.rows.items() if k != "key"}
-        return out
+    def arrays(self) -> dict[str, np.ndarray]:
+        return {k: np.stack(v) if k in ("x", "mask", "oracle", "ron", "holdings", "tenpai") else np.array(v)
+                for k, v in self.rows.items() if k != "key"}
+
+
+def collect(job) -> tuple[dict, list, dict]:
+    """Play one chunk of games. `job` carries plain data (state dicts, lineup names) so it can be
+    sent to a worker process. Returns buffer arrays, their trajectory keys, and rewards per key."""
+    chunk, config, states, lineups, seeds, threads = job
+    torch.set_num_threads(threads)
+    buf = Buffer(chunk)
+    agents = {"teacher": Teacher()}
+    for name, state in states.items():
+        net = Net(**config)
+        net.load_state_dict(state)
+        agents[name] = NetAgent(net, greedy=False, name=name, on_act=buf.on_act if name == "learner" else None)
+    results = run_games(seeds, lambda i: [agents[n] for n in lineups[i]], n_parallel=len(seeds))
+    rewards = {(chunk, r.game, s): RANK_REWARD[r.ranks[s] - 1] for r in results for s in range(4)}
+    learner_ranks = [r.ranks[s] for r in results for s in range(4) if lineups[r.game][s] == "learner"]
+    return buf.arrays(), buf.rows["key"], rewards, learner_ranks
 
 
 def advantages(keys, values: np.ndarray, rewards: dict, gamma: float, lam: float):
@@ -69,12 +91,18 @@ def advantages(keys, values: np.ndarray, rewards: dict, gamma: float, lam: float
     return adv, adv + values
 
 
+def _batched(fn, *tensors, bs: int = 4096) -> torch.Tensor:
+    with torch.no_grad():
+        return torch.cat([fn(*(t[s : s + bs] for t in tensors)) for s in range(0, len(tensors[0]), bs)])
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--init", default="checkpoints/sl_b2p.pt")
     ap.add_argument("--out", default="checkpoints/rl.pt")
     ap.add_argument("--iters", type=int, default=40)
     ap.add_argument("--games", type=int, default=64, help="games per iteration")
+    ap.add_argument("--workers", type=int, default=4, help="collection processes (0 = in-process)")
     ap.add_argument("--epochs", type=int, default=2)
     ap.add_argument("--bs", type=int, default=1024)
     ap.add_argument("--lr", type=float, default=1e-4)
@@ -94,34 +122,41 @@ def main() -> None:
     net = load(a.init)
     anchor = copy.deepcopy(net).eval()
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-4)
-    teacher = Teacher()
-    snapshots = [NetAgent(copy.deepcopy(net), greedy=False, name="snap0")]
+    snapshots = {"snap0": copy.deepcopy(net.state_dict())}
+    pool = mp.get_context("spawn").Pool(a.workers) if a.workers else None
+    n_chunks = max(1, a.workers)
     seed = 0
     for it in range(1, a.iters + 1):
         t0 = time.time()
-        buf = Buffer()
-        learner = NetAgent(net, greedy=False, name="learner", on_act=buf.on_act)
         lineups = []
         for _ in range(a.games):
             u = rng.random()
-            other = teacher if u < 0.25 else rng.choice(snapshots) if u < 0.5 else learner
-            n_learn = 4 if other is learner else rng.choice((1, 2))
-            seats = [learner] * n_learn + [other] * (4 - n_learn)
+            other = "teacher" if u < 0.25 else rng.choice(list(snapshots)) if u < 0.5 else "learner"
+            n_learn = 4 if other == "learner" else rng.choice((1, 2))
+            seats = ["learner"] * n_learn + [other] * (4 - n_learn)
             rng.shuffle(seats)
             lineups.append(seats)
-        results = run_games(list(range(seed, seed + a.games)), lambda i: lineups[i],
-                            n_parallel=a.games)
+        states = {"learner": net.state_dict(), **snapshots}
+        jobs = []
+        for c in range(n_chunks):
+            idx = list(range(c, a.games, n_chunks))
+            jobs.append((c, net.config, states, [lineups[i] for i in idx], [seed + i for i in idx],
+                         1 if pool else torch.get_num_threads()))
         seed += a.games
-        rewards = {(r.game, s): RANK_REWARD[r.ranks[s] - 1] for r in results for s in range(4)}
-        learner_ranks = [r.ranks[s] for r in results for s in range(4) if lineups[r.game][s] is learner]
+        outs = pool.map(collect, jobs) if pool else [collect(j) for j in jobs]
+        b = {k: torch.from_numpy(np.concatenate([o[0][k] for o in outs])) for k in outs[0][0]}
+        b["x"], b["oracle"] = b["x"].float(), b["oracle"].float()
+        keys = [k for o in outs for k in o[1]]
+        rewards = {k: v for o in outs for k, v in o[2].items()}
+        learner_ranks = [r for o in outs for r in o[3]]
         t_collect = time.time() - t0
 
+        torch.set_num_threads(max(1, a.workers))
+        net.eval()
+        values = _batched(net.value, b["x"], b["oracle"]).numpy()
+        anchor_logp = _batched(lambda x, m: masked_logits(anchor(x)["logits"], m).log_softmax(1), b["x"], b["mask"])
         net.train()
-        b = buf.tensors()
-        with torch.no_grad():
-            values = torch.cat([net.value(b["x"][s : s + 4096], b["oracle"][s : s + 4096])
-                                for s in range(0, len(b["x"]), 4096)]).numpy()
-        adv, ret = advantages(buf.rows["key"], values, rewards, a.gamma, a.lam)
+        adv, ret = advantages(keys, values, rewards, a.gamma, a.lam)
         adv_t = torch.from_numpy((adv - adv.mean()) / (adv.std() + 1e-8))
         ret_t = torch.from_numpy(ret)
         n = len(adv)
@@ -129,18 +164,14 @@ def main() -> None:
             for idx in torch.randperm(n).split(a.bs):
                 x, mask, act = b["x"][idx], b["mask"][idx], b["action"][idx]
                 out = net(x)
-                logits = masked_logits(out["logits"], mask)
-                logp_all = logits.log_softmax(1)
+                logp_all = masked_logits(out["logits"], mask).log_softmax(1)
                 logp = logp_all.gather(1, act[:, None]).squeeze(1)
                 ratio = (logp - b["logp"][idx]).exp()
                 pg = -torch.min(ratio * adv_t[idx], ratio.clamp(1 - a.clip, 1 + a.clip) * adv_t[idx]).mean()
                 p = logp_all.exp()
                 ent = -(p * logp_all.masked_fill(~mask, 0)).sum(1).mean()
-                with torch.no_grad():
-                    anchor_logp = masked_logits(anchor(x)["logits"], mask).log_softmax(1)
-                kl = (p * (logp_all - anchor_logp).masked_fill(~mask, 0)).sum(1).mean()
-                v = net.value(x, b["oracle"][idx])
-                vl = F.mse_loss(v, ret_t[idx])
+                kl = (p * (logp_all - anchor_logp[idx]).masked_fill(~mask, 0)).sum(1).mean()
+                vl = F.mse_loss(net.value(x, b["oracle"][idx]), ret_t[idx])
                 bl = belief_loss(out, b["ron"][idx], b["holdings"][idx], b["tenpai"][idx])
                 loss = pg - a.ent * ent + a.vf * vl + a.anchor_kl * kl + a.aux * sum(bl.values())
                 opt.zero_grad()
@@ -152,12 +183,15 @@ def main() -> None:
               f"pg {pg.item():.3f} v {vl.item():.3f} ent {ent.item():.3f} kl_anchor {kl.item():.4f} "
               f"ron {bl['ron'].item():.4f} (collect {t_collect:.0f}s, total {time.time() - t0:.0f}s)", flush=True)
         if it % 5 == 0:
-            snapshots = (snapshots + [NetAgent(copy.deepcopy(net), greedy=False, name=f"snap{it}")])[-4:]
+            snapshots[f"snap{it}"] = copy.deepcopy(net.state_dict())
+            snapshots = dict(list(snapshots.items())[-4:])
         save(net, a.out)
         if a.eval_every and it % a.eval_every == 0:
-            m = duplicate_match(NetAgent(net, greedy=True), teacher, list(range(10**6, 10**6 + a.eval_seeds)),
+            m = duplicate_match(NetAgent(net, greedy=True), Teacher(), list(range(10**6, 10**6 + a.eval_seeds)),
                                 game_mode="4p-red-east")
             print(f"  eval vs 3x teacher (east): {fmt(m)}", flush=True)
+    if pool:
+        pool.close()
 
 
 if __name__ == "__main__":

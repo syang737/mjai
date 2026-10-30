@@ -16,7 +16,7 @@ from riichienv import Meld as RMeld
 
 from .hand import shanten, waits
 from .state import Player, RoundState
-from .tiles import N_TYPES, RED_FIVES, IdAllocator, is_honor, number
+from .tiles import N_TYPES, RED_FIVES, IdAllocator
 
 _MELD_TYPES = {
     "chi": MeldType.Chi,
@@ -79,14 +79,14 @@ def ron_payment(state: RoundState, seat: int, tile: int) -> int:
     return result.ron_agari if result.is_win else 0
 
 
-def _chi_shapes(hand: np.ndarray, t: int) -> bool:
-    if is_honor(t):
-        return False
-    n = number(t)
-    return any(
-        1 <= n + a <= 9 and 1 <= n + b <= 9 and hand[t + a] and hand[t + b]
-        for a, b in ((-2, -1), (-1, 1), (1, 2))
-    )
+def chi_tiles(hand: np.ndarray) -> np.ndarray:
+    """(34,) bool: tiles this hand could chi."""
+    h = hand[:27].reshape(3, 9) > 0
+    c = np.zeros((3, 9), bool)
+    c[:, 2:] |= h[:, :7] & h[:, 1:8]  # n-2, n-1
+    c[:, 1:8] |= h[:, :7] & h[:, 2:]  # n-1, n+1
+    c[:, :7] |= h[:, 1:8] & h[:, 2:]  # n+1, n+2
+    return np.concatenate([c.ravel(), np.zeros(7, bool)])
 
 
 def belief_labels(state: RoundState, seat: int) -> BeliefLabels:
@@ -113,7 +113,7 @@ def belief_labels(state: RoundState, seat: int) -> BeliefLabels:
         if p.riichi_seq is None:
             lab.pon[j] = p.hand >= 2
             if j == 0:
-                lab.chi[j] = [_chi_shapes(p.hand, t) for t in range(N_TYPES)]
+                lab.chi[j] = chi_tiles(p.hand)
     return lab
 
 
@@ -131,6 +131,9 @@ def genbutsu(state: RoundState, seat: int, opp: int) -> np.ndarray:
     return safe
 
 
+_HONOR_DANGER = np.array([0.25, 0.2, 0.12, 0.05, 0.0])
+
+
 def heuristic_danger(state: RoundState, seat: int) -> np.ndarray:
     """(3, 34) relative deal-in danger from public info only: genbutsu, suji, kabe (no-chance), honor counts.
 
@@ -138,23 +141,19 @@ def heuristic_danger(state: RoundState, seat: int) -> np.ndarray:
     shapes could still wait on them; other wait shapes (kanchan, penchan, shanpon, tanki) get a floor.
     """
     visible = state.visible_counts(seat)
+    v = visible[:27].reshape(3, 9)
+    kabe_ok = (v[:, 1:7] < 4) & (v[:, 2:8] < 4)  # both shape tiles of a ryanmen still available
     danger = np.zeros((3, N_TYPES))
     for j, opp in enumerate(state.opponents(seat)):
         safe = genbutsu(state, seat, opp)
-        for t in range(N_TYPES):
-            if safe[t] or visible[t] == 4:
-                continue
-            if is_honor(t):
-                danger[j, t] = (0.25, 0.2, 0.12, 0.05)[visible[t]]
-                continue
-            n = number(t)
-            sides = 0
-            # left ryanmen (n-2, n-1) waits on n-3/n; right ryanmen (n+1, n+2) waits on n/n+3
-            if n >= 4 and not safe[t - 3] and visible[t - 2] < 4 and visible[t - 1] < 4:
-                sides += 1
-            if n <= 6 and not safe[t + 3] and visible[t + 1] < 4 and visible[t + 2] < 4:
-                sides += 1
-            danger[j, t] = 0.1 + 0.3 * sides
+        s9 = safe[:27].reshape(3, 9)
+        sides = np.zeros((3, 9))
+        # left ryanmen (n-2, n-1) waits on n-3/n; right ryanmen (n+1, n+2) waits on n/n+3
+        sides[:, 3:] += ~s9[:, :6] & kabe_ok
+        sides[:, :6] += ~s9[:, 3:] & kabe_ok
+        danger[j, :27] = 0.1 + 0.3 * sides.ravel()
+        danger[j, 27:] = _HONOR_DANGER[visible[27:]]
+        danger[j, safe | (visible == 4)] = 0
     return danger
 
 
