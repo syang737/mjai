@@ -61,3 +61,40 @@ def test_adjusted_remaining():
     held[1, 0] = 0.6
     r = adjusted_remaining(visible, held)
     assert r[0] == 0.4 and r[1] == 4
+
+
+S1, S4 = 18, 21
+HAKU = 31
+
+
+def shimocha_state(hand: str, melds=(), riichi=False, **kw) -> RoundState:
+    players = [Player(parse("1199m2468p13579s")), Player(parse(hand), melds=list(melds)),
+               Player(parse("1357m2468p13579s")), Player(parse("1357m2468p13579s"))]
+    if riichi:
+        players[1].discards = [Discard(M9, seq=0, riichi=True)]
+    return RoundState(players, **kw)
+
+
+def ron_tiles(st: RoundState) -> list[int]:
+    return np.flatnonzero(belief_labels(st, seat=0).ron[0]).tolist()
+
+
+def test_open_tanyao_one_sided_yaku():
+    st = shimocha_state("234m567p23s55s", melds=[Meld("pon", (7, 7, 7))])
+    assert np.flatnonzero(belief_labels(st, seat=0).waits[0]).tolist() == [S1, S4]
+    assert ron_tiles(st) == [S4]  # 1s breaks tanyao
+
+
+def test_closed_dama_without_yaku_cannot_ron():
+    assert ron_tiles(shimocha_state("123m456p789s23s55z")) == []
+
+
+def test_riichi_gives_yaku_and_payment():
+    st = shimocha_state("123m456p789s23s55z", riichi=True, honba=1)
+    assert ron_tiles(st) == [S1, S4]
+    assert belief_labels(st, seat=0).payment[0, S4] == 1300 + 300  # 1 han 40 fu, non-dealer
+
+
+def test_yakuhai_pon_rons_on_all_waits():
+    st = shimocha_state("234m567p23s99m", melds=[Meld("pon", (HAKU,) * 3)])
+    assert ron_tiles(st) == [S1, S4]

@@ -41,6 +41,13 @@ class Player:
 class RoundState:
     players: list[Player]  # absolute seats 0-3
     dora_indicators: list[int] = field(default_factory=list)
+    round_wind: int = 27  # tile index: 27 = East round, 28 = South round
+    dealer: int = 0
+    honba: int = 0
+    tiles_left: int = 70  # live wall; 0 means the next discard is houtei
+
+    def seat_wind(self, seat: int) -> int:
+        return 27 + (seat - self.dealer) % 4
 
     def opponents(self, seat: int) -> list[int]:
         """Absolute seats of shimocha, toimen, kamicha (relative seats 1, 2, 3)."""

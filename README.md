@@ -2,7 +2,7 @@
 
 Riichi mahjong AI research. The core idea is to make a **tile belief tensor** the central state
 representation. It stores per-opponent, per-tile-type summaries of the hidden state (copies held,
-tenpai, waits, ron-ability after furiten, call-ability) instead of a distribution over all ~1e32
+tenpai, waits, ron-ability after furiten and yaku, deal-in payment, call-ability) instead of a distribution over all ~1e32
 possible opponent hands. The plan is to train it from Tenhou logs, which record every hand, so
 ground-truth labels are free.
 
@@ -19,5 +19,5 @@ The package is named `mjbot` so it doesn't shadow the `mjai` protocol package.
 uv venv && uv pip install -e '.[dev]' && .venv/bin/pytest
 ```
 
-Known gaps: ron labels are shape-only (no yaku check, so an open yakuless hand counts as able to ron).
-Payment-on-deal-in labels and the Tenhou log → `RoundState` pipeline come next.
+Known gaps: payments ignore ura dora, ippatsu and red fives (riichi hands are underestimated).
+The Tenhou log → `RoundState` pipeline comes next.
