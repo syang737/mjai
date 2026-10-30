@@ -36,3 +36,13 @@ def waits(counts: np.ndarray) -> list[int]:
 def ukeire(counts: np.ndarray, remaining: np.ndarray) -> float:
     """Expected number of drawable tiles that lower shanten."""
     return float(sum(remaining[t] for t in improving_tiles(counts)))
+
+
+def discard_table(counts: np.ndarray, remaining: np.ndarray) -> dict[int, tuple[int, float]]:
+    """For a 3n+2 hand: {tile type: (shanten, ukeire) after discarding one copy of it}."""
+    out = {}
+    for t in np.flatnonzero(counts):
+        h = counts.copy()
+        h[t] -= 1
+        out[int(t)] = (shanten(h), ukeire(h, remaining))
+    return out

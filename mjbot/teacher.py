@@ -8,7 +8,7 @@ import numpy as np
 
 from .actions import AGARI, PASS, PON, RED_DISCARD, RIICHI, RYUKYOKU
 from .belief import heuristic_danger
-from .hand import shanten, ukeire
+from .hand import discard_table
 from .runner import Decision
 from .tiles import RED_FIVES, dora_from_indicator, is_honor, number
 
@@ -56,13 +56,12 @@ class Teacher:
         remaining = np.clip(4 - st.visible_counts(d.seat), 0, None)
         threats = self._threats(d)
         danger = heuristic_danger(st, d.seat)[threats].max(0) if threats else np.zeros(34)
+        table = discard_table(hand, remaining)
         options = []
         for i in np.flatnonzero(d.mask[:37]):
             t = _RED_INDEX.get(i, i)
-            h = hand.copy()
-            h[t] -= 1
-            sh = shanten(h)
-            offense = -100 * sh + ukeire(h, remaining) - 2 * _keep_value(t, d, hand)
+            sh, uk = table[t]
+            offense = -100 * sh + uk - 2 * _keep_value(t, d, hand)
             if i >= 34 or (t in RED_FIVES and t in st.players[d.seat].red and hand[t] == 1):
                 offense -= 3  # throwing away the red five
             options.append((i, sh, offense, danger[t]))
