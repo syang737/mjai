@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-from mjbot.replay import decisions, final_ranks, outcome
+from mjbot.replay import decisions, final_ranks, leftover_deposits, outcome
 from mjbot.tenhou import decode_meld, mjlog_to_mjai
 from mjbot.tracker import Tracker
 
@@ -34,7 +34,9 @@ def test_replay_accepts_every_logged_action_and_scores_add_up():
     assert n > 500
     scores, ranks, deltas = outcome(ev)
     start = next(e["scores"] for e in ev if e["type"] == "start_kyoku")
-    assert (np.array(start) + np.array(deltas).sum(0)).tolist() == scores
+    got = np.array(start) + np.array(deltas).sum(0)
+    got[ranks.index(1)] += leftover_deposits(ev)
+    assert got.tolist() == scores
     assert sorted(ranks) == [1, 2, 3, 4]
 
 

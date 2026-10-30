@@ -12,7 +12,6 @@ import argparse
 import contextlib
 import glob
 import time
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -21,7 +20,7 @@ import torch.nn.functional as F
 from .data import load
 from .features import N_ENGINE
 from .model import Net, belief_loss, masked_logits, save
-from .stream import LogStream, load_games
+from .stream import LogStream, load_games, log_files
 
 _KEYS = ("x", "mask", "action", "tenpai", "ron", "holdings", "reward")
 
@@ -104,7 +103,8 @@ def split(data: dict, val_frac: float = 0.1, seed: int = 0) -> tuple[np.ndarray,
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="data/teacher", help="npz shards (self-play recorder output)")
-    ap.add_argument("--logs", default="", help="directory of mjai .jsonl game logs; streams samples instead")
+    ap.add_argument("--logs", default="", help="directory of game logs (.jsonl or Tenhou .xml.gz); streams "
+                    "samples and re-scans the directory each pass")
     ap.add_argument("--val-games", type=int, default=100, help="--logs: games held out for validation")
     ap.add_argument("--steps", type=int, default=20000, help="--logs: optimizer steps")
     ap.add_argument("--eval-every", type=int, default=2000, help="--logs: steps between validations")
@@ -141,14 +141,14 @@ def main() -> None:
               + f" ({time.time() - t0:.0f}s)", flush=True)
 
     if a.logs:
-        paths = sorted(Path(a.logs).glob("*.jsonl"))
-        val_paths, train_paths = paths[: a.val_games], paths[a.val_games :]
+        val_paths = log_files(a.logs)[: a.val_games]
         val = load_games(val_paths)
         va = np.arange(len(val["action"]))
-        print(f"{len(train_paths)} train games (streamed) / {len(val_paths)} val games ({len(va)} samples)",
-              flush=True)
+        print(f"{len(log_files(a.logs)) - len(val_paths)} train games so far (streamed) / {len(val_paths)} val "
+              f"games ({len(va)} samples)", flush=True)
         sched = torch.optim.lr_scheduler.OneCycleLR(opt, a.lr, total_steps=a.steps, pct_start=0.05)
-        loader = torch.utils.data.DataLoader(LogStream(train_paths), batch_size=a.bs, num_workers=a.workers,
+        stream = LogStream(a.logs, exclude={p.name for p in val_paths})
+        loader = torch.utils.data.DataLoader(stream, batch_size=a.bs, num_workers=a.workers,
                                              pin_memory=a.device.startswith("cuda"), persistent_workers=True)
         for step, raw in enumerate(loader, 1):
             ls = train_step(prepare(raw, a.device))

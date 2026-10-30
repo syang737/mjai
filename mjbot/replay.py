@@ -9,6 +9,7 @@ from the engine, so `Decision.full_state()` and the belief labels work as in sel
 """
 
 import argparse
+import gzip
 import json
 from pathlib import Path
 from typing import Iterator
@@ -29,7 +30,13 @@ class ReplayError(Exception):
 
 
 def load_events(path) -> list[dict]:
-    return [json.loads(line) for line in Path(path).read_text().splitlines() if line]
+    """mjai .jsonl, or a raw Tenhou mjlog (.xml.gz), converted on the fly."""
+    path = Path(path)
+    if path.name.endswith(".xml.gz"):
+        from .tenhou import mjlog_to_mjai
+
+        return mjlog_to_mjai(gzip.decompress(path.read_bytes()))
+    return [json.loads(line) for line in path.read_text().splitlines() if line]
 
 
 def _mask(e: dict, seat: int) -> dict:
@@ -95,19 +102,33 @@ def outcome(events: list[dict]) -> tuple[list[int], list[int], list[list[int]]]:
     return scores, final_ranks(scores, start["oya"]), deltas
 
 
+def leftover_deposits(events: list[dict]) -> int:
+    """Riichi deposits still on the table when the game ends (Tenhou gives them to first place)."""
+    sticks = 0
+    for e in events:
+        if e["type"] == "start_kyoku":
+            sticks = e["kyotaku"]
+        elif e["type"] == "reach_accepted":
+            sticks += 1
+        elif e["type"] == "hora":
+            sticks = 0
+    return sticks * 1000
+
+
 def check(paths: list[Path]) -> None:
     """Replay games end to end: every logged action must be legal and the per-round score changes
-    must add up to the logged final scores."""
+    (plus leftover deposits to first place) must add up to the logged final scores."""
     ok = n_dec = 0
     for p in paths:
         try:
             events = load_events(p)
             n_dec += sum(1 for _ in decisions(events))
-            scores, _, deltas = outcome(events)
+            scores, ranks, deltas = outcome(events)
             start = next(e["scores"] for e in events if e["type"] == "start_kyoku")
-            got = (np.array(start) + np.array(deltas).sum(0)).tolist()
-            if got != scores:
-                raise ReplayError(f"scores {got} != logged {scores}")
+            got = np.array(start) + np.array(deltas).sum(0)
+            got[ranks.index(1)] += leftover_deposits(events)
+            if got.tolist() != scores:
+                raise ReplayError(f"scores {got.tolist()} != logged {scores}")
             ok += 1
         except Exception as ex:
             print(f"{p.name}: {type(ex).__name__}: {str(ex)[:300]}", flush=True)
@@ -119,7 +140,8 @@ def main() -> None:
     ap.add_argument("--src", default="data/tenhou/mjai")
     ap.add_argument("--check", type=int, default=100, help="number of games to verify")
     a = ap.parse_args()
-    check(sorted(Path(a.src).glob("*.jsonl"))[: a.check])
+    src = Path(a.src)
+    check(sorted([*src.glob("*.jsonl"), *src.glob("*.xml.gz")])[: a.check])
 
 
 if __name__ == "__main__":

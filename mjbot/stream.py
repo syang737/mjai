@@ -43,24 +43,37 @@ def _safe_samples(path, game: int) -> list[dict]:
         return []
 
 
+def log_files(src) -> list[Path]:
+    """Game logs in a directory: mjai .jsonl or raw Tenhou .xml.gz."""
+    src = Path(src)
+    return sorted([*src.glob("*.jsonl"), *src.glob("*.xml.gz")])
+
+
 class LogStream(IterableDataset):
-    def __init__(self, paths, buffer: int = 20000, seed: int = 0, loop: bool = True):
-        self.paths = [str(p) for p in paths]
+    """`source` is a list of paths, or a directory that is re-scanned every pass (so a download
+    still in progress keeps adding games); `exclude` holds file names kept out (validation)."""
+
+    def __init__(self, source, buffer: int = 20000, seed: int = 0, loop: bool = True, exclude=()):
+        self.source = source if isinstance(source, (str, Path)) else [str(p) for p in source]
+        self.exclude = set(exclude)
         self.buffer = buffer
         self.seed = seed
         self.loop = loop
+
+    def _paths(self) -> list[str]:
+        paths = log_files(self.source) if isinstance(self.source, (str, Path)) else self.source
+        return [str(p) for p in paths if Path(p).name not in self.exclude]
 
     def __iter__(self):
         info = get_worker_info()
         wid, nw = (info.id, info.num_workers) if info else (0, 1)
         rng = random.Random(self.seed * 1000 + wid)
-        mine = self.paths[wid::nw]
         buf: list[dict] = []
         epoch = 0
         while True:
-            order = mine[:]
+            order = self._paths()[wid::nw]
             rng.shuffle(order)
-            for i, p in enumerate(order):
+            for p in order:
                 for s in _safe_samples(p, game=hash((epoch, p)) & 0x7FFFFFFF):
                     if len(buf) < self.buffer:
                         buf.append(s)
