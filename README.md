@@ -87,10 +87,35 @@ Same per-round RL model against 3 copies of the SL model: avg rank 2.436 ± 0.03
 SL-like opponents rather than to get generally stronger. PPO with only the final-rank reward
 made the policy worse outright: one rank outcome per game is too noisy a signal at this scale.
 
+### Houou logs (human expert play)
+
+SL on Tenhou Houou 4-player hanchan, streamed from raw logs while they downloaded (≈1.5k → 3.8k
+games seen; 7,000 steps × 512 on CPU, same 96×5 model), 100 held-out games (61k decisions):
+
+| metric | value |
+|---|---|
+| move agreement with Houou players | 74.6% |
+| deal-in AUC, all opponents: learned / heuristic | 0.927 / 0.580 |
+| deal-in AUC, opponents in riichi: learned / heuristic | 0.713 / 0.691 |
+
+Duplicate arena, 800 games each (east-only):
+
+| candidate | vs 3× | avg rank | rank pts | win | deal-in |
+|---|---|---|---|---|---|
+| Houou SL | teacher | **2.185 ± 0.041** | **+23.3 ± 2.8** | 23.3% | 8.4% |
+| Houou SL | teacher-trained SL | 2.214 ± 0.040 | +18.8 ± 3.0 | 22.8% | 9.2% |
+
+A few thousand human games beat everything trained on the teacher's self-play by a wide margin
+(~7 standard errors vs the teacher). Against riichi the learned deal-in head beats
+genbutsu/suji/kabe on human opponents too, but the gap is modest; human riichi waits are much
+harder to read than the teacher's.
+
 ## Known gaps
 
 - Mortal (GitHub) is still unreachable from the development environment, so the strongest
   baseline is our own models.
 - Payments ignore ura dora and ippatsu (riichi hands are underestimated).
+- riichienv's replay mode rejects a rinshan kaihou tsumo after kakan when rinshan is the only yaku;
+  such games (≈1 in 1,500) are skipped.
 - Not built yet: event-sequence transformer encoder, belief-sampled search at inference time,
   learned global reward predictor (the oracle critic stands in for it).
