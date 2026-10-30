@@ -29,6 +29,9 @@ riichienv (Rust rules engine, Tenhou rules)
 | `actions.py` | 46-way action space over engine actions |
 | `features.py` | engine planes (74×34) + public belief planes; oracle planes for the critic |
 | `model.py` | 1-D ResNet; policy, belief (ron / holdings / tenpai) and oracle-critic heads |
+| `tenhou.py` | Houou log index + rate-limited download, mjlog XML → mjai |
+| `replay.py` | replay a full mjai log through the engine: legal mask + logged action per decision |
+| `stream.py` | samples built on the fly from logs (`IterableDataset` with a shuffle buffer) |
 
 The package is named `mjbot` so it doesn't shadow the `mjai` protocol package.
 
@@ -41,6 +44,16 @@ python -m mjbot.train_sl --data data/teacher --out checkpoints/sl_b2p.pt --epoch
 python -m mjbot.train_rl --init checkpoints/sl_b2p.pt --out checkpoints/rl.pt --iters 40
 python -m mjbot.arena --a checkpoints/rl.pt --b teacher --seeds 100
 ```
+
+Human expert data (Tenhou Houou, 4-player hanchan):
+
+```bash
+python -m mjbot.tenhou index && python -m mjbot.tenhou fetch --limit 20000 && python -m mjbot.tenhou convert
+python -m mjbot.replay --check 1000          # every logged action legal, scores add up
+python -m mjbot.train_sl --logs data/tenhou/mjai --steps 20000 --belief-to-policy --out checkpoints/houou.pt
+```
+
+On a GPU machine: `bash scripts/setup_gpu.sh` (CUDA is picked up automatically; bf16 autocast).
 
 ## Results so far (CPU only, 4 cores)
 
@@ -76,10 +89,8 @@ made the policy worse outright: one rank outcome per game is too noisy a signal 
 
 ## Known gaps
 
-- Training data is self-play by the rule-based teacher: Tenhou logs (tenhou.net) and Mortal
-  (GitHub) were not reachable from the development environment. `Tracker` already consumes mjai
-  logs, so converted Tenhou logs can replace the teacher data; legal masks for logged decisions
-  would come from replaying through riichienv.
+- Mortal (GitHub) is still unreachable from the development environment, so the strongest
+  baseline is our own models.
 - Payments ignore ura dora and ippatsu (riichi hands are underestimated).
 - Not built yet: event-sequence transformer encoder, belief-sampled search at inference time,
   learned global reward predictor (the oracle critic stands in for it).
