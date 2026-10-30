@@ -1,6 +1,7 @@
 """PPO self-play fine-tuning from the SL checkpoint.
 
-- Reward: Tenhou-style rank points at game end (placement EV, not raw score).
+- Reward: Tenhou-style rank points at game end (placement EV, not raw score), optionally plus
+  each round's score change (`--round-reward`, per 10k points) to give every round its own signal.
 - Critic: sees oracle planes (opponents' hands and ronnable tiles); the actor never does.
 - Belief heads keep training on simulator ground truth as an auxiliary loss.
 - League: each game seats the learner against itself, the teacher, or frozen snapshots;
@@ -28,7 +29,7 @@ from .model import Net, belief_loss, load, masked_logits, save
 from .runner import RANK_REWARD, run_games
 from .teacher import Teacher
 
-_FIELDS = ("x", "mask", "action", "logp", "oracle", "ron", "holdings", "tenpai", "key")
+_FIELDS = ("x", "mask", "action", "logp", "oracle", "ron", "holdings", "tenpai", "key", "round")
 
 
 class Buffer:
@@ -51,15 +52,17 @@ class Buffer:
             r["holdings"].append(lab.holdings)
             r["tenpai"].append(lab.tenpai)
             r["key"].append((self.chunk, d.game, d.seat))
+            r["round"].append(d.round_index)
 
     def arrays(self) -> dict[str, np.ndarray]:
         return {k: np.stack(v) if k in ("x", "mask", "oracle", "ron", "holdings", "tenpai") else np.array(v)
-                for k, v in self.rows.items() if k != "key"}
+                for k, v in self.rows.items() if k not in ("key", "round")}
 
 
-def collect(job) -> tuple[dict, list, dict]:
+def collect(job) -> tuple:
     """Play one chunk of games. `job` carries plain data (state dicts, lineup names) so it can be
-    sent to a worker process. Returns buffer arrays, their trajectory keys, and rewards per key."""
+    sent to a worker process. Returns buffer arrays, trajectory keys, round indices, final rewards
+    per key, per-round score changes per key, and the learner's ranks."""
     chunk, config, states, lineups, seeds, threads = job
     torch.set_num_threads(threads)
     buf = Buffer(chunk)
@@ -70,21 +73,38 @@ def collect(job) -> tuple[dict, list, dict]:
         agents[name] = NetAgent(net, greedy=False, name=name, on_act=buf.on_act if name == "learner" else None)
     results = run_games(seeds, lambda i: [agents[n] for n in lineups[i]], n_parallel=len(seeds))
     rewards = {(chunk, r.game, s): RANK_REWARD[r.ranks[s] - 1] for r in results for s in range(4)}
+    deltas = {(chunk, r.game, s): [d[s] for d in r.round_deltas] for r in results for s in range(4)}
     learner_ranks = [r.ranks[s] for r in results for s in range(4) if lineups[r.game][s] == "learner"]
-    return buf.arrays(), buf.rows["key"], rewards, learner_ranks
+    return buf.arrays(), buf.rows["key"], buf.rows["round"], rewards, deltas, learner_ranks
 
 
-def advantages(keys, values: np.ndarray, rewards: dict, gamma: float, lam: float):
-    """GAE per (game, seat) trajectory; reward only at the final decision."""
+def step_rewards(rounds: list[int], final: float, round_rewards: list[float]) -> np.ndarray:
+    """Rewards for one trajectory: each round's reward lands on the seat's last decision in that
+    round (rounds without a recorded decision roll forward), the final reward on the last decision."""
+    r = np.zeros(len(rounds), np.float32)
+    paid = 0  # rounds already credited
+    for pos, rnd in enumerate(rounds):
+        last = pos == len(rounds) - 1
+        if last or rounds[pos + 1] != rnd:
+            upto = len(round_rewards) if last else rnd + 1
+            r[pos] = sum(round_rewards[paid:upto])
+            paid = upto
+    r[-1] += final
+    return r
+
+
+def advantages(keys, rounds, values: np.ndarray, rewards: dict, round_rewards: dict, gamma: float, lam: float):
+    """GAE per (game, seat) trajectory."""
     adv = np.zeros(len(keys), np.float32)
     traj: dict[tuple, list[int]] = {}
     for i, k in enumerate(keys):
         traj.setdefault(k, []).append(i)
     for k, idx in traj.items():
+        r = step_rewards([rounds[i] for i in idx], rewards[k], round_rewards.get(k, []))
         nxt_v, gae = 0.0, 0.0
-        for j, i in enumerate(reversed(idx)):
-            r = rewards[k] if j == 0 else 0.0
-            delta = r + gamma * nxt_v - values[i]
+        for j in range(len(idx) - 1, -1, -1):
+            i = idx[j]
+            delta = r[j] + gamma * nxt_v - values[i]
             gae = delta + gamma * lam * gae
             adv[i] = gae
             nxt_v = values[i]
@@ -111,6 +131,7 @@ def main() -> None:
     ap.add_argument("--vf", type=float, default=0.5)
     ap.add_argument("--aux", type=float, default=0.5)
     ap.add_argument("--anchor-kl", type=float, default=0.02, help="KL to the SL policy, against drift")
+    ap.add_argument("--round-reward", type=float, default=0.0, help="reward per 10k points gained in a round")
     ap.add_argument("--gamma", type=float, default=1.0)
     ap.add_argument("--lam", type=float, default=0.95)
     ap.add_argument("--eval-every", type=int, default=10)
@@ -147,8 +168,10 @@ def main() -> None:
         b = {k: torch.from_numpy(np.concatenate([o[0][k] for o in outs])) for k in outs[0][0]}
         b["x"], b["oracle"] = b["x"].float(), b["oracle"].float()
         keys = [k for o in outs for k in o[1]]
-        rewards = {k: v for o in outs for k, v in o[2].items()}
-        learner_ranks = [r for o in outs for r in o[3]]
+        rounds = [r for o in outs for r in o[2]]
+        rewards = {k: v for o in outs for k, v in o[3].items()}
+        round_rewards = {k: [a.round_reward * d / 10000 for d in v] for o in outs for k, v in o[4].items()}
+        learner_ranks = [r for o in outs for r in o[5]]
         t_collect = time.time() - t0
 
         torch.set_num_threads(max(1, a.workers))
@@ -156,7 +179,7 @@ def main() -> None:
         values = _batched(net.value, b["x"], b["oracle"]).numpy()
         anchor_logp = _batched(lambda x, m: masked_logits(anchor(x)["logits"], m).log_softmax(1), b["x"], b["mask"])
         net.train()
-        adv, ret = advantages(keys, values, rewards, a.gamma, a.lam)
+        adv, ret = advantages(keys, rounds, values, rewards, round_rewards, a.gamma, a.lam)
         adv_t = torch.from_numpy((adv - adv.mean()) / (adv.std() + 1e-8))
         ret_t = torch.from_numpy(ret)
         n = len(adv)

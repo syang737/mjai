@@ -21,6 +21,7 @@ class Tracker:
         self.known = [False] * 4
         self.scores = [25000] * 4
         self.kyoku = 0
+        self.round_index = -1  # rounds started so far in this game, minus one
         self._seq = 0
         self._reach_pending = [False] * 4
         self.round_over = True
@@ -60,6 +61,7 @@ class Tracker:
         )
         self.scores = list(e["scores"])
         self.kyoku = (_WIND[e["bakaze"]] - 27) * 4 + e["kyoku"] - 1
+        self.round_index += 1
         self.known = [tehai[0] != "?" for tehai in e["tehais"]]
         self._reach_pending = [False] * 4
         self.round_over = False

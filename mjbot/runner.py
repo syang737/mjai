@@ -24,6 +24,7 @@ class Decision:
     mask: np.ndarray
     legal: dict[int, Action]
     env: RiichiEnv
+    round_index: int = 0  # which round of the game this decision is in
 
     def full_state(self) -> RoundState:
         """Same round with every concealed hand filled in from the engine (for labels / oracle features)."""
@@ -47,6 +48,20 @@ class GameResult:
     scores: list[int]
     ranks: list[int]  # 1-4
     stats: list[dict] = field(default_factory=list)  # per seat: wins, deal_ins, riichi, calls, rounds
+    round_deltas: list[list[int]] = field(default_factory=list)  # per round: score change per seat
+
+
+def _round_deltas(log_events: list[dict]) -> list[list[int]]:
+    """Score change per seat for each round, including riichi deposits paid."""
+    out: list[list[int]] = []
+    for e in log_events:
+        if e["type"] == "start_kyoku":
+            out.append([0, 0, 0, 0])
+        elif e["type"] in ("hora", "ryukyoku") and "deltas" in e:
+            out[-1] = [a + b for a, b in zip(out[-1], e["deltas"])]
+        elif e["type"] == "reach_accepted":
+            out[-1][e["actor"]] -= 1000
+    return out
 
 
 def _stats(log_events: list[dict]) -> list[dict]:
@@ -95,7 +110,8 @@ def run_games(
                 for ev in o.new_events():
                     g["trackers"][seat].feed(ev)
                 mask, legal = legal_map(o.legal_actions())
-                d = Decision(i, seat, o, g["trackers"][seat].state, mask, legal, g["env"])
+                tr = g["trackers"][seat]
+                d = Decision(i, seat, o, tr.state, mask, legal, g["env"], tr.round_index)
                 agent = g["agents"][seat]
                 pending.setdefault(id(agent), []).append(d)
                 owners[id(agent)] = agent
@@ -112,6 +128,7 @@ def run_games(
             if g["env"].done():
                 env = g["env"]
                 log = env.mjai_log  # O(len) to fetch, so only once per game
-                results.append(GameResult(i, g["seed"], g["agents"], env.scores(), env.ranks(), _stats(log)))
+                results.append(GameResult(i, g["seed"], g["agents"], env.scores(), env.ranks(), _stats(log),
+                                          _round_deltas(log)))
                 del live[i]
     return sorted(results, key=lambda r: r.game)
