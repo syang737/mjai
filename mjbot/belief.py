@@ -53,7 +53,8 @@ def furiten_tiles(state: RoundState, seat: int) -> set[int]:
 
 
 def ron_payment(state: RoundState, seat: int, tile: int) -> int:
-    """Points `seat` collects for ron on a (non-red) `tile`, including honba; 0 if that win has no yaku.
+    """Points `seat` collects for ron on a (non-red) `tile`, including honba; 0 if that win has no yaku
+    or every copy of the tile is already in `seat`'s hand, melds or the dora indicators.
 
     Ura dora and ippatsu are not counted, so riichi hands are underestimated.
     """
@@ -66,8 +67,10 @@ def ron_payment(state: RoundState, seat: int, tile: int) -> int:
 
     melds = [RMeld(_MELD_TYPES[m.kind], meld_ids(m), m.kind != "ankan") for m in p.melds]
     hand = [alloc.take(t, red=t in p.red and i == 0) for t in range(N_TYPES) for i in range(p.hand[t])]
-    win = alloc.take(tile)
     dora = [alloc.take(t) for t in state.dora_indicators]
+    if alloc.free(tile) == 0:
+        return 0
+    win = alloc.take(tile)
     cond = Conditions(
         riichi=p.riichi_seq is not None,
         houtei=state.tiles_left == 0,

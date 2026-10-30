@@ -80,6 +80,9 @@ class IdAllocator:
     def __init__(self):
         self.used: dict[int, list[int]] = {}
 
+    def free(self, t: int) -> int:
+        return 4 - len(self.used.get(t, []))
+
     def take(self, t: int, red: bool = False) -> int:
         free = [k for k in range(4) if k not in self.used.setdefault(t, [])]
         k = 0 if red else next((k for k in free if not (t in RED_FIVES and k == 0)), free[0])

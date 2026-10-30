@@ -98,3 +98,11 @@ def test_riichi_gives_yaku_and_payment():
 def test_yakuhai_pon_rons_on_all_waits():
     st = shimocha_state("234m567p23s99m", melds=[Meld("pon", (HAKU,) * 3)])
     assert ron_tiles(st) == [S1, S4]
+
+
+def test_no_ron_when_all_copies_accounted_for():
+    # riichi waiting on 1s/4s, but all four 1s are in its own closed kan
+    st = shimocha_state("123m456p23s55z", melds=[Meld("ankan", (S1,) * 4)], riichi=True)
+    lab = belief_labels(st, seat=0)
+    assert lab.waits[0, S1] and not lab.ron[0, S1]
+    assert lab.ron[0, S4]
