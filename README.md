@@ -66,9 +66,13 @@ Duplicate arena, 1 candidate vs 3 teachers, east-only, 200 seeds × 4 seat rotat
 | SL | 2.454 ± 0.032 | +3.0 ± 2.5 | 19.4% | 10.3% |
 | SL + 60 PPO iters, final-rank reward only | 2.565 ± 0.032 | −6.1 ± 2.4 | 19.4% | 11.7% |
 
-PPO with only the final-rank reward (≈3,800 self-play games) made the policy worse: one rank
-outcome per game is too noisy a signal at this scale. `--round-reward` adds each round's score
-change as an intermediate reward.
+| SL + 60 PPO iters, rank + per-round score reward (`--round-reward 0.5`) | 2.561 ± 0.035 | −4.1 ± 2.7 | 18.4% | 9.5% |
+
+Same per-round RL model against 3 copies of the SL model: avg rank 2.436 ± 0.034 (rank pts
++4.3 ± 2.6), i.e. it beats its own starting point but not the teacher. Small-scale self-play
+(~3,800 games, opponents mostly the learner and its snapshots) appears to learn to exploit
+SL-like opponents rather than to get generally stronger. PPO with only the final-rank reward
+made the policy worse outright: one rank outcome per game is too noisy a signal at this scale.
 
 ## Known gaps
 
