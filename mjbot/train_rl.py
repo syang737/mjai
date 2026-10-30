@@ -210,6 +210,7 @@ def main() -> None:
             snapshots = dict(list(snapshots.items())[-4:])
         save(net, a.out)
         if a.eval_every and it % a.eval_every == 0:
+            save(net, a.out.replace(".pt", f"_iter{it}.pt"))
             m = duplicate_match(NetAgent(net, greedy=True), Teacher(), list(range(10**6, 10**6 + a.eval_seeds)),
                                 game_mode="4p-red-east")
             print(f"  eval vs 3x teacher (east): {fmt(m)}", flush=True)
