@@ -11,22 +11,19 @@ Opponent axis is relative seat order: 0 = shimocha, 1 = toimen, 2 = kamicha.
 from dataclasses import dataclass
 
 import numpy as np
-from mahjong.hand_calculating.hand import HandCalculator
-from mahjong.hand_calculating.hand_config import HandConfig, OptionalRules
-from mahjong.meld import Meld as MjMeld
+from riichienv import Conditions, HandEvaluator, MeldType
+from riichienv import Meld as RMeld
 
 from .hand import shanten, waits
 from .state import Player, RoundState
-from .tiles import N_TYPES, is_honor, number, to_list
+from .tiles import N_TYPES, RED_FIVES, IdAllocator, is_honor, number
 
-_CALC = HandCalculator()
-_RULES = OptionalRules(has_open_tanyao=True)  # Tenhou rules; red fives aren't tracked in RoundState yet
 _MELD_TYPES = {
-    "chi": MjMeld.CHI,
-    "pon": MjMeld.PON,
-    "daiminkan": MjMeld.KAN,
-    "kakan": MjMeld.SHOUMINKAN,
-    "ankan": MjMeld.KAN,
+    "chi": MeldType.Chi,
+    "pon": MeldType.Pon,
+    "daiminkan": MeldType.Daiminkan,
+    "kakan": MeldType.Kakan,
+    "ankan": MeldType.Ankan,
 }
 
 
@@ -56,36 +53,30 @@ def furiten_tiles(state: RoundState, seat: int) -> set[int]:
 
 
 def ron_payment(state: RoundState, seat: int, tile: int) -> int:
-    """Points `seat` collects for ron on `tile`, including honba; 0 if that win has no yaku.
+    """Points `seat` collects for ron on a (non-red) `tile`, including honba; 0 if that win has no yaku.
 
-    Ura dora, ippatsu and red fives are not counted, so riichi hands are underestimated.
+    Ura dora and ippatsu are not counted, so riichi hands are underestimated.
     """
     p = state.players[seat]
-    used = [0] * N_TYPES
+    alloc = IdAllocator()
 
-    def take(t: int) -> int:  # assign distinct 136-format ids per tile type
-        used[t] += 1
-        return t * 4 + used[t] - 1
+    def meld_ids(m) -> list[int]:
+        red = next(i for i, t in enumerate(m.tiles) if t in RED_FIVES) if m.red else None
+        return [alloc.take(t, red=i == red) for i, t in enumerate(m.tiles)]
 
-    melds = [MjMeld(_MELD_TYPES[m.kind], [take(t) for t in m.tiles], opened=m.kind != "ankan") for m in p.melds]
-    tiles = [i for m in melds for i in m.tiles] + [take(t) for t in to_list(p.hand)]
-    win = take(tile)
-    config = HandConfig(
-        is_riichi=p.riichi_seq is not None,
-        is_houtei=state.tiles_left == 0,
-        player_wind=state.seat_wind(seat),
-        round_wind=state.round_wind,
-        tsumi_number=state.honba,
-        options=_RULES,
+    melds = [RMeld(_MELD_TYPES[m.kind], meld_ids(m), m.kind != "ankan") for m in p.melds]
+    hand = [alloc.take(t, red=t in p.red and i == 0) for t in range(N_TYPES) for i in range(p.hand[t])]
+    win = alloc.take(tile)
+    dora = [alloc.take(t) for t in state.dora_indicators]
+    cond = Conditions(
+        riichi=p.riichi_seq is not None,
+        houtei=state.tiles_left == 0,
+        player_wind=state.seat_wind(seat) - 27,
+        round_wind=state.round_wind - 27,
+        honba=state.honba,
     )
-    result = _CALC.estimate_hand_value(
-        tiles + [win],
-        win,
-        melds=melds or None,
-        dora_indicators=[take(t) for t in state.dora_indicators] or None,
-        config=config,
-    )
-    return 0 if result.error else result.cost["main"] + result.cost["main_bonus"]
+    result = HandEvaluator(hand + [win], melds).calc(win, dora, cond, [])
+    return result.ron_agari if result.is_win else 0
 
 
 def _chi_shapes(hand: np.ndarray, t: int) -> bool:
@@ -111,11 +102,10 @@ def belief_labels(state: RoundState, seat: int) -> BeliefLabels:
     )
     for j, opp in enumerate(state.opponents(seat)):
         p: Player = state.players[opp]
-        closed = not p.is_open
         lab.holdings[j] = p.hand
-        if shanten(p.hand, closed) == 0:
+        if shanten(p.hand) == 0:
             lab.tenpai[j] = True
-            w = waits(p.hand, closed)
+            w = waits(p.hand)
             lab.waits[j, w] = True
             for t in set(w) - furiten_tiles(state, opp):
                 lab.payment[j, t] = ron_payment(state, opp, t)

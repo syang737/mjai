@@ -12,7 +12,7 @@ def test_ryanmen_waits():
 
 def test_open_hand_waits():
     h = parse("456m11p45s")  # 7 tiles, two melds called
-    assert waits(h, closed=False) == [20, 23]
+    assert waits(h) == [20, 23]
 
 
 def test_ukeire_on_adjusted_wall():

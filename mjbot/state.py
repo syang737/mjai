@@ -20,11 +20,13 @@ class Discard:
 class Meld:
     kind: str  # chi | pon | daiminkan | kakan | ankan
     tiles: tuple[int, ...]
+    red: bool = False  # contains the red five of its suit
 
 
 @dataclass
 class Player:
     hand: np.ndarray  # concealed tile counts, meld tiles excluded
+    red: set[int] = field(default_factory=set)  # tile types whose red five is in the concealed hand
     melds: list[Meld] = field(default_factory=list)
     discards: list[Discard] = field(default_factory=list)
 
@@ -44,6 +46,7 @@ class RoundState:
     round_wind: int = 27  # tile index: 27 = East round, 28 = South round
     dealer: int = 0
     honba: int = 0
+    riichi_sticks: int = 0
     tiles_left: int = 70  # live wall; 0 means the next discard is houtei
 
     def seat_wind(self, seat: int) -> int:

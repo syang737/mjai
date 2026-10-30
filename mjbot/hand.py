@@ -1,40 +1,38 @@
 """Own-hand math: shanten, waits, ukeire. Ukeire takes a `remaining` vector so it can be
-computed on the belief-adjusted wall rather than the naive 4 - visible count."""
+computed on the belief-adjusted wall rather than the naive 4 - visible count.
+
+Shanten comes from riichienv's Rust implementation (~0.5us per call). Hands with melds simply
+have fewer tiles; chiitoitsu/kokushi can't apply to them because they need 13 concealed tiles.
+"""
 
 import numpy as np
-from mahjong.shanten import Shanten
+from riichienv import calculate_shanten
 
 from .tiles import N_TYPES
 
-_SHANTEN = Shanten()
+
+def _ids(counts: np.ndarray) -> list[int]:
+    return [t * 4 + k for t in range(N_TYPES) for k in range(counts[t])]
 
 
-def shanten(counts: np.ndarray, closed: bool = True) -> int:
-    """-1 = complete. Chiitoitsu/kokushi only count for closed hands."""
-    return _SHANTEN.calculate_shanten(list(map(int, counts)), use_chiitoitsu=closed, use_kokushi=closed)
+def shanten(counts: np.ndarray) -> int:
+    """-1 = complete."""
+    return calculate_shanten(_ids(counts))
 
 
-def improving_tiles(counts: np.ndarray, closed: bool = True) -> list[int]:
+def improving_tiles(counts: np.ndarray) -> list[int]:
     """For a 3n+1 hand: tile types whose draw lowers shanten. At tenpai these are the waits."""
     assert counts.sum() % 3 == 1, "expects a hand waiting for a draw (3n+1 tiles)"
-    counts = counts.copy()
-    base = shanten(counts, closed)
-    out = []
-    for t in range(N_TYPES):
-        if counts[t] >= 4:
-            continue
-        counts[t] += 1
-        if shanten(counts, closed) < base:
-            out.append(t)
-        counts[t] -= 1
-    return out
+    ids = _ids(counts)
+    base = calculate_shanten(ids)
+    return [t for t in range(N_TYPES) if counts[t] < 4 and calculate_shanten(ids + [t * 4 + int(counts[t])]) < base]
 
 
-def waits(counts: np.ndarray, closed: bool = True) -> list[int]:
+def waits(counts: np.ndarray) -> list[int]:
     """Shape waits (no yaku check). Empty unless tenpai."""
-    return improving_tiles(counts, closed) if shanten(counts, closed) == 0 else []
+    return improving_tiles(counts) if shanten(counts) == 0 else []
 
 
-def ukeire(counts: np.ndarray, remaining: np.ndarray, closed: bool = True) -> float:
+def ukeire(counts: np.ndarray, remaining: np.ndarray) -> float:
     """Expected number of drawable tiles that lower shanten."""
-    return float(sum(remaining[t] for t in improving_tiles(counts, closed)))
+    return float(sum(remaining[t] for t in improving_tiles(counts)))

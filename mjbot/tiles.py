@@ -56,3 +56,45 @@ def parse(hand: str) -> np.ndarray:
 
 def to_list(counts: np.ndarray) -> list[int]:
     return [t for t in range(N_TYPES) for _ in range(counts[t])]
+
+
+RED_FIVES = (4, 13, 22)  # 5m 5p 5s
+RED_IDS = (16, 52, 88)  # their red copies in 136-id format (copy 0)
+
+
+def dora_from_indicator(t: int) -> int:
+    if t < 27:
+        return t // 9 * 9 + (t % 9 + 1) % 9
+    if t < 31:
+        return 27 + (t - 26) % 4
+    return 31 + (t - 30) % 3
+
+
+def is_red_id(i: int) -> bool:
+    return i in RED_IDS
+
+
+class IdAllocator:
+    """Hands out distinct 136-format ids per tile type; copy 0 of a five is the red one."""
+
+    def __init__(self):
+        self.used: dict[int, list[int]] = {}
+
+    def take(self, t: int, red: bool = False) -> int:
+        free = [k for k in range(4) if k not in self.used.setdefault(t, [])]
+        k = 0 if red else next((k for k in free if not (t in RED_FIVES and k == 0)), free[0])
+        assert k in free, f"no free copy of {to_mjai(t)}"
+        self.used[t].append(k)
+        return t * 4 + k
+
+
+def counts_to_ids(counts: np.ndarray, red: set[int] = frozenset()) -> list[int]:
+    alloc = IdAllocator()
+    return [alloc.take(t, red=t in red and i == 0) for t in range(N_TYPES) for i in range(counts[t])]
+
+
+def ids_to_counts(ids) -> np.ndarray:
+    counts = np.zeros(N_TYPES, dtype=np.int8)
+    for i in ids:
+        counts[i // 4] += 1
+    return counts
