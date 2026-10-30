@@ -13,30 +13,38 @@ from .features import labels, planes
 from .runner import RANK_REWARD, Decision, run_games
 
 
+FIELDS = ("x", "mask", "action", "tenpai", "ron", "holdings", "payment", "opp_riichi", "game", "seat")
+
+
+def sample(d: Decision, a: int) -> dict[str, np.ndarray]:
+    """One training sample (without the outcome reward, which is known only at game end)."""
+    lab = labels(d)
+    return dict(
+        x=planes(d).astype(np.float16),
+        mask=d.mask,
+        action=np.int64(a),
+        tenpai=lab.tenpai,
+        ron=lab.ron,
+        holdings=lab.holdings,
+        payment=np.minimum(lab.payment, 2**15 - 1).astype(np.int16),
+        opp_riichi=np.array([d.state.players[o].riichi_seq is not None for o in d.state.opponents(d.seat)]),
+        game=np.int64(d.game),
+        seat=np.int64(d.seat),
+    )
+
+
 class Recorder:
     """`on_decision` callback for run_games. Skips forced moves (one legal action)."""
 
     def __init__(self, record_seats=None):
         self.record_seats = record_seats  # callable (game, seat) -> bool, or None for all
-        self.rows: dict[str, list] = {k: [] for k in
-                                      ("x", "mask", "action", "tenpai", "ron", "holdings", "payment",
-                                       "opp_riichi", "game", "seat")}
+        self.rows: dict[str, list] = {k: [] for k in FIELDS}
 
     def __call__(self, d: Decision, a: int) -> None:
         if d.mask.sum() <= 1 or (self.record_seats and not self.record_seats(d.game, d.seat)):
             return
-        lab = labels(d)
-        r = self.rows
-        r["x"].append(planes(d).astype(np.float16))
-        r["mask"].append(d.mask)
-        r["action"].append(a)
-        r["tenpai"].append(lab.tenpai)
-        r["ron"].append(lab.ron)
-        r["holdings"].append(lab.holdings)
-        r["payment"].append(np.minimum(lab.payment, 2**15 - 1).astype(np.int16))
-        r["opp_riichi"].append([d.state.players[o].riichi_seq is not None for o in d.state.opponents(d.seat)])
-        r["game"].append(d.game)
-        r["seat"].append(d.seat)
+        for k, v in sample(d, a).items():
+            self.rows[k].append(v)
 
     def arrays(self, results) -> dict[str, np.ndarray]:
         out = {k: np.array(v) if k in ("action", "game", "seat") else np.stack(v)

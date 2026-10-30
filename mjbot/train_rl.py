@@ -134,16 +134,18 @@ def main() -> None:
     ap.add_argument("--round-reward", type=float, default=0.0, help="reward per 10k points gained in a round")
     ap.add_argument("--gamma", type=float, default=1.0)
     ap.add_argument("--lam", type=float, default=0.95)
+    ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--eval-every", type=int, default=10)
     ap.add_argument("--eval-seeds", type=int, default=40)
     a = ap.parse_args()
     torch.manual_seed(0)
     rng = random.Random(0)
 
-    net = load(a.init)
+    net = load(a.init).to(a.device)
     anchor = copy.deepcopy(net).eval()
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-4)
-    snapshots = {"snap0": copy.deepcopy(net.state_dict())}
+    cpu_state = lambda: {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}  # noqa: E731
+    snapshots = {"snap0": cpu_state()}
     pool = mp.get_context("spawn").Pool(a.workers) if a.workers else None
     n_chunks = max(1, a.workers)
     seed = 0
@@ -157,7 +159,7 @@ def main() -> None:
             seats = ["learner"] * n_learn + [other] * (4 - n_learn)
             rng.shuffle(seats)
             lineups.append(seats)
-        states = {"learner": net.state_dict(), **snapshots}
+        states = {"learner": cpu_state(), **snapshots}
         jobs = []
         for c in range(n_chunks):
             idx = list(range(c, a.games, n_chunks))
@@ -165,7 +167,7 @@ def main() -> None:
                          1 if pool else torch.get_num_threads()))
         seed += a.games
         outs = pool.map(collect, jobs) if pool else [collect(j) for j in jobs]
-        b = {k: torch.from_numpy(np.concatenate([o[0][k] for o in outs])) for k in outs[0][0]}
+        b = {k: torch.from_numpy(np.concatenate([o[0][k] for o in outs])).to(a.device) for k in outs[0][0]}
         b["x"], b["oracle"] = b["x"].float(), b["oracle"].float()
         keys = [k for o in outs for k in o[1]]
         rounds = [r for o in outs for r in o[2]]
@@ -176,15 +178,15 @@ def main() -> None:
 
         torch.set_num_threads(max(1, a.workers))
         net.eval()
-        values = _batched(net.value, b["x"], b["oracle"]).numpy()
+        values = _batched(net.value, b["x"], b["oracle"]).float().cpu().numpy()
         anchor_logp = _batched(lambda x, m: masked_logits(anchor(x)["logits"], m).log_softmax(1), b["x"], b["mask"])
         net.train()
         adv, ret = advantages(keys, rounds, values, rewards, round_rewards, a.gamma, a.lam)
-        adv_t = torch.from_numpy((adv - adv.mean()) / (adv.std() + 1e-8))
-        ret_t = torch.from_numpy(ret)
+        adv_t = torch.from_numpy((adv - adv.mean()) / (adv.std() + 1e-8)).to(a.device)
+        ret_t = torch.from_numpy(ret).to(a.device)
         n = len(adv)
         for _ in range(a.epochs):
-            for idx in torch.randperm(n).split(a.bs):
+            for idx in torch.randperm(n, device=a.device).split(a.bs):
                 x, mask, act = b["x"][idx], b["mask"][idx], b["action"][idx]
                 out = net(x)
                 logp_all = masked_logits(out["logits"], mask).log_softmax(1)
@@ -206,12 +208,12 @@ def main() -> None:
               f"pg {pg.item():.3f} v {vl.item():.3f} ent {ent.item():.3f} kl_anchor {kl.item():.4f} "
               f"ron {bl['ron'].item():.4f} (collect {t_collect:.0f}s, total {time.time() - t0:.0f}s)", flush=True)
         if it % 5 == 0:
-            snapshots[f"snap{it}"] = copy.deepcopy(net.state_dict())
+            snapshots[f"snap{it}"] = cpu_state()
             snapshots = dict(list(snapshots.items())[-4:])
         save(net, a.out)
         if a.eval_every and it % a.eval_every == 0:
             save(net, a.out.replace(".pt", f"_iter{it}.pt"))
-            m = duplicate_match(NetAgent(net, greedy=True), Teacher(), list(range(10**6, 10**6 + a.eval_seeds)),
+            m = duplicate_match(NetAgent(net, greedy=True, device=a.device), Teacher(), list(range(10**6, 10**6 + a.eval_seeds)),
                                 game_mode="4p-red-east")
             print(f"  eval vs 3x teacher (east): {fmt(m)}", flush=True)
     if pool:
