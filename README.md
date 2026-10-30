@@ -42,6 +42,34 @@ python -m mjbot.train_rl --init checkpoints/sl_b2p.pt --out checkpoints/rl.pt --
 python -m mjbot.arena --a checkpoints/rl.pt --b teacher --seeds 100
 ```
 
+## Results so far (CPU only, 4 cores)
+
+Data: 2,400 east-only games of teacher self-play (≈815k decisions). Model: 96-channel, 5-block
+1-D ResNet (~0.4M params), beliefs fed into the policy head.
+
+Supervised, held-out games:
+
+| metric | value |
+|---|---|
+| move agreement with teacher | 97.1% (92% before adding shanten/ukeire-after-discard planes) |
+| deal-in AUC, all opponents: learned / heuristic | 0.939 / 0.556 |
+| deal-in AUC, opponents in riichi: learned / heuristic | 0.692 / 0.656 |
+
+The all-opponents gap is mostly the learned head knowing *whether* an opponent is tenpai; against
+riichi (tenpai known) the learned head still beats genbutsu/suji/kabe.
+
+Duplicate arena, 1 candidate vs 3 teachers, east-only, 200 seeds × 4 seat rotations (800 games),
+± is one standard error over seeds; 2.5 = parity:
+
+| candidate | avg rank | rank pts | win | deal-in |
+|---|---|---|---|---|
+| SL | 2.454 ± 0.032 | +3.0 ± 2.5 | 19.4% | 10.3% |
+| SL + 60 PPO iters, final-rank reward only | 2.565 ± 0.032 | −6.1 ± 2.4 | 19.4% | 11.7% |
+
+PPO with only the final-rank reward (≈3,800 self-play games) made the policy worse: one rank
+outcome per game is too noisy a signal at this scale. `--round-reward` adds each round's score
+change as an intermediate reward.
+
 ## Known gaps
 
 - Training data is self-play by the rule-based teacher: Tenhou logs (tenhou.net) and Mortal
