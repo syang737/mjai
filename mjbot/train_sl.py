@@ -20,6 +20,7 @@ import torch.nn.functional as F
 from .data import load
 from .features import N_ENGINE
 from .model import Net, belief_loss, masked_logits, save
+from .model import load as load_checkpoint
 from .stream import LogStream, load_games, log_files
 
 _KEYS = ("x", "mask", "action", "tenpai", "ron", "holdings", "reward")
@@ -120,10 +121,12 @@ def main() -> None:
     ap.add_argument("--blocks", type=int, default=5)
     ap.add_argument("--max-samples", type=int, default=0)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--init", default="", help="start from this checkpoint (its architecture wins over "
+                    "--ch/--blocks/--belief-to-policy); the LR schedule restarts, so pass a lower --lr")
     a = ap.parse_args()
     torch.manual_seed(0)
 
-    net = Net(a.ch, a.blocks, a.belief_to_policy).to(a.device)
+    net = (load_checkpoint(a.init) if a.init else Net(a.ch, a.blocks, a.belief_to_policy)).to(a.device)
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-4)
     t0 = time.time()
 
