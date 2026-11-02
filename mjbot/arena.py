@@ -2,6 +2,7 @@
 the candidate in each of the four seats (same seed, rotated), which removes most seat/wall luck.
 
     python -m mjbot.arena --a checkpoints/rl.pt --b teacher --seeds 100
+    python -m mjbot.arena --a new.pt --c old.pt --b teacher   # paired: is new better than old vs teacher?
 """
 
 import argparse
@@ -41,7 +42,19 @@ def duplicate_match(candidate, baseline, seeds, game_mode: str = "4p-red-half", 
         deal_in_rate=sum(s["deal_ins"] for s in stats) / rounds,
         riichi_rate=sum(s["riichi"] for s in stats) / rounds,
         call_rate=sum(s["calls"] for s in stats) / rounds,
+        per_seed_rank=per_seed_rank,
+        per_seed_pts=per_seed_pts,
     )
+
+
+def paired(a: dict, c: dict) -> str:
+    """Difference a - c from two matches on the same seeds; the SE is over per-seed differences, so
+    wall/seat luck shared by both candidates cancels."""
+    out = []
+    for key, name in (("per_seed_rank", "avg_rank"), ("per_seed_pts", "rank_pts")):
+        d = a[key] - c[key]
+        out.append(f"{name} {d.mean():+.3f}±{d.std(ddof=1) / np.sqrt(len(d)):.3f}")
+    return "  ".join(out)
 
 
 def fmt(m: dict) -> str:
@@ -55,12 +68,19 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--a", required=True, help="candidate: 'teacher' or checkpoint path")
     ap.add_argument("--b", default="teacher", help="baseline (3 seats)")
+    ap.add_argument("--c", default="", help="second candidate, played on the same seeds for a paired comparison with --a")
     ap.add_argument("--seeds", type=int, default=100)
     ap.add_argument("--seed0", type=int, default=10**6)  # away from training seeds
     ap.add_argument("--mode", default="4p-red-half")
     a = ap.parse_args()
-    m = duplicate_match(make_agent(a.a), make_agent(a.b), list(range(a.seed0, a.seed0 + a.seeds)), a.mode)
-    print(f"{a.a} vs 3x {a.b}: {fmt(m)}")
+    seeds = list(range(a.seed0, a.seed0 + a.seeds))
+    baseline = make_agent(a.b)
+    m = duplicate_match(make_agent(a.a), baseline, seeds, a.mode)
+    print(f"{a.a} vs 3x {a.b}: {fmt(m)}", flush=True)
+    if a.c:
+        mc = duplicate_match(make_agent(a.c), baseline, seeds, a.mode)
+        print(f"{a.c} vs 3x {a.b}: {fmt(mc)}")
+        print(f"paired {a.a} - {a.c}: {paired(m, mc)}")
 
 
 if __name__ == "__main__":
