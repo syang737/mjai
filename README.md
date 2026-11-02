@@ -110,6 +110,27 @@ A few thousand human games beat everything trained on the teacher's self-play by
 genbutsu/suji/kabe on human opponents too, but the gap is modest; human riichi waits are much
 harder to read than the teacher's.
 
+**20k games.** The model above was fine-tuned on all 20,000 downloaded games (19,900 train,
+the 100 oldest held out; none of those were seen by either model). It ran two 7,000-step CPU runs
+(lr 1e-3, then 3e-4, chained with `--init`), ≈7.2M samples, still under one pass over the ≈12M decisions:
+
+| metric (100 held-out games, 60k decisions) | `houou.pt` | `houou20k.pt` |
+|---|---|---|
+| move agreement | 75.1% | **76.0%** |
+| policy loss | 0.672 | 0.639 |
+| deal-in AUC, all opponents (heuristic 0.564) | 0.928 | 0.934 |
+| deal-in AUC, opponents in riichi (heuristic 0.675) | 0.699 | 0.705 |
+
+| candidate | vs 3× | avg rank | rank pts | win | deal-in |
+|---|---|---|---|---|---|
+| Houou 20k SL | Houou SL (`houou.pt`) | **2.415 ± 0.036** | +5.5 ± 2.7 | 22.9% | 10.3% |
+| Houou 20k SL | teacher | 2.228 ± 0.038 | +18.2 ± 2.7 | 23.9% | 9.2% |
+
+It beats its predecessor head-to-head (~2.4 SE), but against the teacher it is no better than
+`houou.pt` (2.185 ± 0.041; the difference is within noise). The teacher seems too weak an
+opponent to separate two human-imitation models. Gains in imitation accuracy are now small per
+added game; the ~0.4M-param network is the likely limit, and a larger model needs the GPU box.
+
 ## Known gaps
 
 - Mortal (GitHub) is still unreachable from the development environment, so the strongest
