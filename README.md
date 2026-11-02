@@ -126,10 +126,22 @@ the 100 oldest held out; none of those were seen by either model). It ran two 7,
 | Houou 20k SL | Houou SL (`houou.pt`) | **2.415 ± 0.036** | +5.5 ± 2.7 | 22.9% | 10.3% |
 | Houou 20k SL | teacher | 2.228 ± 0.038 | +18.2 ± 2.7 | 23.9% | 9.2% |
 
-It beats its predecessor head-to-head (~2.4 SE), but against the teacher it is no better than
-`houou.pt` (2.185 ± 0.041; the difference is within noise). The teacher seems too weak an
-opponent to separate two human-imitation models. Gains in imitation accuracy are now small per
-added game; the ~0.4M-param network is the likely limit, and a larger model needs the GPU box.
+It beats its predecessor head-to-head (~2.4 SE). Against the teacher, a paired comparison
+(both models on the same seeds, `arena --c`) puts it slightly *behind* `houou.pt`:
+
+| vs 3× teacher | games per model | Δ avg rank (new − old) | Δ rank pts (new − old) |
+|---|---|---|---|
+| east-only | 800 | +0.043 ± 0.039 | −5.1 ± 2.7 |
+| hanchan (east-south) | 400 | +0.022 ± 0.055 | −6.0 ± 4.0 |
+
+Average rank is within noise; rank points lean against the new model (≈ −5.4 ± 2.3 pooled),
+because it finishes last more often (east 18.4% vs 14.9%, hanchan 17.8% vs 12.2%). It also calls
+more (0.28 vs 0.24–0.25 calls per round) and deals in a bit more. More training moved it closer to
+how Houou players play, including their calling, and that helps against human-like opponents
+but costs against a teacher that pushes until someone riichis. Pairing barely shrinks the
+standard error (0.039 vs 0.056 unpaired): once the two models make different choices the games
+diverge, so most wall luck doesn't cancel. Imitation accuracy now improves only slowly with more games;
+the ~0.4M-param network is the likely limit, and a larger model needs the GPU box.
 
 ## Known gaps
 
